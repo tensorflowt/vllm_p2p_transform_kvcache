@@ -288,6 +288,9 @@ class NCCLLibrary:
         return unique_id
 
     def unique_id_from_bytes(self, data: bytes) -> ncclUniqueId:
+        """
+        func: 将128字节的二进制数据转换为NCCL通信所需的唯一ID对象,用于多机多卡训练时的通信初始化
+        """
         if len(data) != 128:
             raise ValueError(
                 f"Expected 128 bytes for ncclUniqueId, got {len(data)} bytes")

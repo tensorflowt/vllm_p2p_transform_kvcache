@@ -13,17 +13,40 @@ import msgpack
 import zmq
 from quart import Quart, make_response, request
 
-count = 0
-prefill_instances: dict[str, Any] = {}  # http_address: (zmq_address, stamp)
-decode_instances: dict[str, Any] = {}  # http_address: (zmq_address, stamp)
+"""
+工作流程
+这些变量共同实现了分布式服务的动态发现和负载均衡机制：
 
-prefill_cv = threading.Condition()
-decode_cv = threading.Condition()
+节点通过ZMQ注册到对应的实例字典
 
-DEFAULT_PING_SECONDS = 5
+条件变量确保线程安全的并发访问
+
+计数器实现简单的轮询负载均衡
+
+心跳机制自动清理失效节点
+
+这些设计使得代理服务器能够动态管理后端服务节点，实现高可用性和负载均衡。
+"""
+
+count = 0 # 全局计数器，用于实现轮询负载均衡
+
+# 表信息
+# k:节点的HTTP地址（如 "192.168.1.100:8000"）
+# v:元组 (ZMQ地址, 时间戳)
+prefill_instances: dict[str, Any] = {}  # 预填充节点注册表 
+decode_instances: dict[str, Any] = {}   # 解码节点注册表
+
+prefill_cv = threading.Condition() # 预填充实例的线程同步条件变量
+decode_cv = threading.Condition()  # 解码实例的线程同步条件变量
+
+# 节点注册后5秒内需要重新发送心跳，否则会被清理
+DEFAULT_PING_SECONDS = 5 # 心跳超时时间（秒）
 
 
 def _remove_oldest_instances(instances: dict[str, Any]) -> None:
+    """
+    func:这是一个心跳超时清理函数，用于维护节点健康状态
+    """
     oldest_key = next(iter(instances), None)
     while oldest_key is not None:
         value = instances[oldest_key]
@@ -35,6 +58,9 @@ def _remove_oldest_instances(instances: dict[str, Any]) -> None:
 
 
 def _listen_for_register(poller, router_socket):
+    """
+    func:持续监听并管理两类实例的生命周期
+    """
     while True:
         socks = dict(poller.poll())
         if router_socket in socks:
@@ -76,6 +102,9 @@ def _listen_for_register(poller, router_socket):
 
 
 def start_service_discovery(hostname, port):
+    """
+    func: 初始化ZMQ通信框架并启动监听线程(服务发现机制的启动入口)。
+    """
     if not hostname:
         hostname = socket.gethostname()
     if port == 0:
@@ -94,17 +123,23 @@ def start_service_discovery(hostname, port):
     _listener_thread.start()
     return _listener_thread
 
-
+# 设置HTTP客户端超时配置（总超时时间为6小时）
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 
 app = Quart(__name__)
 
 
 def random_uuid() -> str:
+    """
+    func: 生成简化版UUID,为每个请求创建唯一ID
+    """
     return str(uuid.uuid4().hex)
 
 
 async def forward_request(url, data, request_id):
+    """
+    func: 代理转发请求并支持流式响应,将请求转发到指定URL(预填充或解码节点)
+    """
     async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
         headers = {
             "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
@@ -123,12 +158,13 @@ async def forward_request(url, data, request_id):
 @app.route("/v1/completions", methods=["POST"])
 @app.route("/v1/chat/completions", methods=["POST"])
 async def handle_request():
+    """
+    func: 异步HTTP请求处理器,支持两个OpenAI兼容的API端点,实现预填充和解码阶段的分离执行。
+    """
     try:
-        original_request_data = await request.get_json()
-
+        original_request_data = await request.get_json() # 获取原始请求
         prefill_request = original_request_data.copy()
-        # change max_tokens = 1 to let it only do prefill
-        prefill_request["max_tokens"] = 1
+        prefill_request["max_tokens"] = 1 # 限制只执行预填充
         if "max_completion_tokens" in prefill_request:
             prefill_request["max_completion_tokens"] = 1
 
@@ -137,7 +173,7 @@ async def handle_request():
         global prefill_cv
         with prefill_cv:
             prefill_list = list(prefill_instances.items())
-            prefill_addr, prefill_zmq_addr = prefill_list[count % len(prefill_list)]
+            prefill_addr, prefill_zmq_addr = prefill_list[count % len(prefill_list)] # 轮询选择算法
             prefill_zmq_addr = prefill_zmq_addr[0]
 
         global decode_instances
@@ -154,18 +190,19 @@ async def handle_request():
         )
         count += 1
 
+        # 生成请求id
         request_id = (
             f"___prefill_addr_{prefill_zmq_addr}___decode_addr_"
             f"{decode_zmq_addr}_{random_uuid()}"
         )
 
-        # finish prefill
+        # 预填充阶段执行
         async for _ in forward_request(
             f"http://{prefill_addr}{request.path}", prefill_request, request_id
         ):
             continue
 
-        # return decode
+        # 解码阶段处理
         generator = forward_request(
             f"http://{decode_addr}{request.path}", original_request_data, request_id
         )

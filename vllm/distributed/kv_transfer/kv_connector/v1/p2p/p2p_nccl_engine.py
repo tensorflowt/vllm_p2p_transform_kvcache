@@ -29,6 +29,12 @@ DEFAULT_MEM_POOL_SIZE_GB = 32
 
 @contextmanager
 def set_p2p_nccl_context(num_channels: str):
+    """
+    func:设置NCCL点对点(P2P)通信上下文:
+    1)初始化NCCL通信环境
+    2)配置P2P通信通道数量
+    3)建立GPU间的直接内存访问(DMA)通道
+    """
     original_values: dict[str, Any] = {}
     env_vars = [
         'NCCL_MAX_NCHANNELS',
@@ -59,9 +65,9 @@ def set_p2p_nccl_context(num_channels: str):
 
 @dataclass
 class SendQueueItem:
-    tensor_id: str
-    remote_address: str
-    tensor: torch.Tensor
+    tensor_id: str         # 张量的唯一标识符
+    remote_address: str    # 目标节点地址(IP:Port)
+    tensor: torch.Tensor   # 待发送的PyTorch张量
 
 
 class P2pNcclEngine:
@@ -72,11 +78,11 @@ class P2pNcclEngine:
                  hostname: str = "",
                  port_offset: int = 0,
                  library_path: Optional[str] = None) -> None:
-        self.config = config
-        self.rank = port_offset
-        self.local_rank = local_rank
-        self.device = torch.device(f"cuda:{self.local_rank}")
-        self.nccl = NCCLLibrary(library_path)
+        self.config = config # KV传输配置对象
+        self.rank = port_offset # 全局rank
+        self.local_rank = local_rank # 本地GPU序号
+        self.device = torch.device(f"cuda:{self.local_rank}") # 绑定GPU设备
+        self.nccl = NCCLLibrary(library_path) # 加载NCCL库
 
         if not hostname:
             hostname = get_ip()
@@ -87,7 +93,7 @@ class P2pNcclEngine:
         self._port = port
 
         # Each card corresponds to a ZMQ address.
-        self.zmq_address = f"{self._hostname}:{self._port}"
+        self.zmq_address = f"{self._hostname}:{self._port}" # ZMQ通信地址
 
         # The `http_port` must be consistent with the port of OpenAI.
         self.http_address = (
@@ -103,6 +109,8 @@ class P2pNcclEngine:
         else:
             self.proxy_address = proxy_ip + ":" + proxy_port
 
+        
+        # ZMQ通信初始化
         self.context = zmq.Context()
         self.router_socket = self.context.socket(zmq.ROUTER)
         self.router_socket.bind(f"tcp://{self.zmq_address}")
@@ -110,13 +118,15 @@ class P2pNcclEngine:
         self.poller = zmq.Poller()
         self.poller.register(self.router_socket, zmq.POLLIN)
 
-        self.send_store_cv = threading.Condition()
-        self.send_queue_cv = threading.Condition()
-        self.recv_store_cv = threading.Condition()
+        # 同步机制
+        self.send_store_cv = threading.Condition() # 发送存储条件变量
+        self.send_queue_cv = threading.Condition() # 发送队列条件变量  
+        self.recv_store_cv = threading.Condition() # 接收存储条件变量
 
         self.send_stream = torch.cuda.Stream()
         self.recv_stream = torch.cuda.Stream()
 
+        # 显存池
         mem_pool_size_gb = float(
             self.config.get_from_extra_config("mem_pool_size_gb",
                                               DEFAULT_MEM_POOL_SIZE_GB))

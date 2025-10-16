@@ -242,13 +242,11 @@ class CustomP2pConnector(KVConnectorBase_V1):
     def parse_request_id(self, request_id: str, is_producer: bool) -> tuple[str, int]:  
         """解析 request_id 获取 IP 和端口"""  
         # 格式: cmpl-___prefill_addr_IP:PORT___decode_addr_IP:PORT_UUID-N  
-        # 示例: cmpl-___prefill_addr_172.16.96.168:21001___decode_addr_172.16.96.168:22001_58abc39f0e5749bc95d48fb71cfd9be0-0 -> 172.16.96.168:22001
-        logger.info("use parse_request_id!")
         if is_producer:  
             match = re.search(r'decode_addr_([\d\.]+):(\d+)', request_id)  
         else:  
             match = re.search(r'prefill_addr_([\d\.]+):(\d+)', request_id)  
-  
+
         if match:  
             ip = match.group(1)  
             port = int(match.group(2))  
@@ -463,7 +461,7 @@ class CustomP2pConnector(KVConnectorBase_V1):
                 logger.warning("Failed to parse request_id: %s", request_id)  
                 continue  
   
-            # Producer 端:尝试获取句柄,但不阻塞等待  
+            # Producer端: 尝试获取句柄,但不阻塞等待  
             dst_handle = b''  
             if self.is_producer:  
                 handle_id = request_id  
