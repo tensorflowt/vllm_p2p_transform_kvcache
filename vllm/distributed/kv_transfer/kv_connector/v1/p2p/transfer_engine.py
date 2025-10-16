@@ -1,6 +1,3 @@
-"""
-created by yansiyu01@baidu.com at 2025/07/31
-"""
 import sys
 import logging
 import cuda_p2p_transfer

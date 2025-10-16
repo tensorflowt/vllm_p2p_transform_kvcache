@@ -122,8 +122,6 @@ class CustomP2pConnector(KVConnectorBase_V1):
         logger.info("start listen for requests!")  
         while True:    
             try:    
-                # 移除 timeout 参数,与 P2pNcclEngine 保持一致  
-                logger.info("poller.poll(): %s", self.poller.poll())
                 socks = dict(self.poller.poll())  
                 
                 # 添加调试日志  
